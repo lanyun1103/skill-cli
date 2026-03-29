@@ -28,6 +28,7 @@ import yaml
 
 CACHE_DIR = Path.home() / ".skill-cli" / "sources"
 REGISTRY_FILE = Path.home() / ".skill-cli" / "registry.json"
+INSTALL_TRACK_FILE = Path.home() / ".skill-cli" / "installed.json"
 USER_SKILLS = Path.home() / ".claude" / "skills"
 
 
@@ -35,6 +36,8 @@ def _ensure_dirs():
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not REGISTRY_FILE.exists():
         REGISTRY_FILE.write_text("{}", encoding="utf-8")
+    if not INSTALL_TRACK_FILE.exists():
+        INSTALL_TRACK_FILE.write_text("{}", encoding="utf-8")
 
 
 def _load_registry() -> dict:
@@ -44,6 +47,20 @@ def _load_registry() -> dict:
 
 def _save_registry(reg: dict):
     REGISTRY_FILE.write_text(json.dumps(reg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_install_track() -> dict:
+    """加载安装追踪记录: {scope: {skill_name: source_name}}"""
+    _ensure_dirs()
+    return json.loads(INSTALL_TRACK_FILE.read_text(encoding="utf-8"))
+
+
+def _save_install_track(track: dict):
+    INSTALL_TRACK_FILE.write_text(json.dumps(track, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _track_key(global_install: bool) -> str:
+    return "global" if global_install else str(Path.cwd())
 
 
 def _source_name_from_url(url: str) -> str:
@@ -168,6 +185,11 @@ def cmd_install(args):
     print(f"\n📥 [{source}] 安装分组 [{group_name}] → {scope}")
     print(f"   包含 {len(skills)} 个 skills\n")
 
+    track = _load_install_track()
+    tk = _track_key(args.g)
+    if tk not in track:
+        track[tk] = {}
+
     installed = 0
     for skill_name in skills:
         src = skills_dir / skill_name
@@ -177,11 +199,21 @@ def cmd_install(args):
             print(f"  ⚠️  {skill_name} — 源文件不存在，跳过")
             continue
 
-        if dst.exists():
+        # 冲突检测：已被其他源安装
+        existing_source = track[tk].get(skill_name)
+        if existing_source and existing_source != source:
+            print(f"  ⚠️  {skill_name} — 冲突！已由 [{existing_source}] 安装")
+            answer = input(f"     覆盖为 [{source}] 的版本？(y/N): ").strip().lower()
+            if answer != "y":
+                print(f"     跳过")
+                continue
+            shutil.rmtree(dst, ignore_errors=True)
+        elif dst.exists():
             src_content = (src / "SKILL.md").read_text(encoding="utf-8")
             dst_content = (dst / "SKILL.md").read_text(encoding="utf-8") if (dst / "SKILL.md").exists() else ""
             if src_content == dst_content:
                 print(f"  ✅ {skill_name} — 已是最新")
+                track[tk][skill_name] = source
                 installed += 1
                 continue
             else:
@@ -189,9 +221,11 @@ def cmd_install(args):
                 shutil.rmtree(dst)
 
         shutil.copytree(src, dst)
+        track[tk][skill_name] = source
         print(f"  ✅ {skill_name} — 已安装")
         installed += 1
 
+    _save_install_track(track)
     print(f"\n完成: {installed}/{len(skills)}\n")
 
 
@@ -217,6 +251,9 @@ def cmd_uninstall(args):
     scope = "全局" if args.g else "项目"
     print(f"\n🗑️  [{source}] 卸载分组 [{group_name}] ← {scope}\n")
 
+    track = _load_install_track()
+    tk = _track_key(args.g)
+
     removed = 0
     for skill_name in skills:
         dst = target / skill_name
@@ -224,9 +261,12 @@ def cmd_uninstall(args):
             shutil.rmtree(dst)
             print(f"  ✅ {skill_name} — 已删除")
             removed += 1
+            if tk in track:
+                track[tk].pop(skill_name, None)
         else:
             print(f"  ⏭️  {skill_name} — 未安装")
 
+    _save_install_track(track)
     print(f"\n完成: 删除了 {removed} 个\n")
 
 
@@ -261,6 +301,7 @@ def cmd_remove(args):
 
 def cmd_status(args):
     reg = _load_registry()
+    track = _load_install_track()
     project_skills = Path.cwd() / ".claude" / "skills"
 
     print(f"\n📊 安装状态")
@@ -294,12 +335,15 @@ def cmd_status(args):
             for s in skills:
                 g_ok = (USER_SKILLS / s / "SKILL.md").exists()
                 p_ok = (project_skills / s / "SKILL.md").exists()
+                # 来源追踪
+                g_src = track.get("global", {}).get(s, "")
+                p_src = track.get(str(Path.cwd()), {}).get(s, "")
                 if g_ok and p_ok:
-                    st = "🌐+📁"
+                    st = f"🌐+📁 (全局←{g_src}, 项目←{p_src})" if g_src or p_src else "🌐+📁"
                 elif g_ok:
-                    st = "🌐 全局"
+                    st = f"🌐 全局 (←{g_src})" if g_src else "🌐 全局"
                 elif p_ok:
-                    st = "📁 项目"
+                    st = f"📁 项目 (←{p_src})" if p_src else "📁 项目"
                 else:
                     st = "—"
                 print(f"      {s}: {st}")
