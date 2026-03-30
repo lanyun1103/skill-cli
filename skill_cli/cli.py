@@ -8,6 +8,8 @@
     skill-cli install <source> <group> -g       安装一组 skills 到用户全局
     skill-cli uninstall <source> <group>        从当前项目卸载
     skill-cli uninstall <source> <group> -g     从用户全局卸载
+    skill-cli sync <source> <group>             同步某组到最新（pull + 重装）
+    skill-cli sync <source> <group> -g          同步某组到全局
     skill-cli status                            查看所有安装状态
     skill-cli update [<source>]                 更新源（git pull）
     skill-cli remove <source>                   删除一个源
@@ -299,6 +301,74 @@ def cmd_remove(args):
     print(f"✅ 已删除源 [{name}]")
 
 
+def cmd_sync(args):
+    """同步某个组到最新：先 git pull 更新源，再重新安装该组 skills"""
+    reg = _load_registry()
+    source = args.source
+    group_name = args.group
+
+    if source not in reg:
+        print(f"❌ 未知源: {source}，先用 skill-cli add <url> 添加")
+        sys.exit(1)
+
+    # Step 1: git pull 更新源
+    print(f"\n🔄 同步 [{source}] / [{group_name}]")
+    _clone_or_pull(reg[source]["url"], source)
+
+    # Step 2: 加载最新的 skills.yaml
+    config, skills_dir = _load_source_config(source)
+    groups = config.get("groups", {})
+
+    if group_name not in groups:
+        print(f"❌ 源 [{source}] 中没有分组: {group_name}")
+        print(f"   可用: {', '.join(groups.keys())}")
+        sys.exit(1)
+
+    skills = groups[group_name].get("skills", [])
+    target = _get_target_dir(args.g)
+    target.mkdir(parents=True, exist_ok=True)
+
+    scope = "全局 (~/.claude/skills/)" if args.g else f"项目 ({target})"
+    print(f"  → {scope}")
+    print(f"  包含 {len(skills)} 个 skills\n")
+
+    track = _load_install_track()
+    tk = _track_key(args.g)
+    if tk not in track:
+        track[tk] = {}
+
+    updated = 0
+    unchanged = 0
+    for skill_name in skills:
+        src = skills_dir / skill_name
+        dst = target / skill_name
+
+        if not src.exists() or not (src / "SKILL.md").exists():
+            print(f"  ⚠️  {skill_name} — 源文件不存在，跳过")
+            continue
+
+        if dst.exists():
+            src_content = (src / "SKILL.md").read_text(encoding="utf-8")
+            dst_content = (dst / "SKILL.md").read_text(encoding="utf-8") if (dst / "SKILL.md").exists() else ""
+            if src_content == dst_content:
+                unchanged += 1
+                continue
+            else:
+                shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+                track[tk][skill_name] = source
+                print(f"  🔄 {skill_name} — 已更新")
+                updated += 1
+        else:
+            shutil.copytree(src, dst)
+            track[tk][skill_name] = source
+            print(f"  ✅ {skill_name} — 新安装")
+            updated += 1
+
+    _save_install_track(track)
+    print(f"\n完成: {updated} 个更新, {unchanged} 个已是最新\n")
+
+
 def cmd_status(args):
     reg = _load_registry()
     track = _load_install_track()
@@ -380,13 +450,18 @@ def main():
     p_remove = sub.add_parser("remove", help="删除源")
     p_remove.add_argument("source", help="源名称")
 
+    p_sync = sub.add_parser("sync", help="同步某组到最新（pull + 重装）")
+    p_sync.add_argument("source", help="源名称")
+    p_sync.add_argument("group", help="分组名称")
+    p_sync.add_argument("-g", action="store_true", help="同步到全局")
+
     sub.add_parser("status", help="查看安装状态")
 
     args = parser.parse_args()
     cmds = {
         "add": cmd_add, "list": cmd_list, "install": cmd_install,
         "uninstall": cmd_uninstall, "update": cmd_update,
-        "remove": cmd_remove, "status": cmd_status,
+        "remove": cmd_remove, "sync": cmd_sync, "status": cmd_status,
     }
 
     if args.command in cmds:
