@@ -1,6 +1,6 @@
 # skill-cli
 
-从 Git 仓库按组安装 Claude Code Skills。一个仓库管理所有 Skills，按场景分组，安装时选组装到全局或项目。
+从 Git 仓库按组安装 Claude Code / Codex Skills。一个仓库管理所有 Skills，按场景分组，安装时选组装到全局或项目；每个 skill 还可以声明目标平台，自动同步到不同目录。
 
 ## 安装
 
@@ -45,6 +45,9 @@ skill-cli status
 # 更新所有源
 skill-cli update
 
+# 将已安装 skill 按目标平台重同步到正确目录
+skill-cli sync
+
 # 卸载
 skill-cli uninstall my-skills common -g
 
@@ -71,28 +74,71 @@ my-skills/
 `skills.yaml` 示例：
 
 ```yaml
+skills:
+  spec-writer:
+    target: codex
+  review-loop:
+    target: codex
+  commit:
+    target: claude
+
 groups:
   common:
     description: 通用工具
     skills:
-      - skill-a
-      - skill-b
+      - commit
+      - spec-writer
+      - review-loop
 
   java:
     description: Java 项目工具集
     skills:
-      - skill-b
-      - skill-c
+      - commit
+      - spec-writer
 ```
 
 同一个 skill 可以属于多个分组。
 
+## Skill Target
+
+`skills.yaml` 顶层可选 `skills` 元数据，用来声明每个 skill 的目标平台：
+
+```yaml
+skills:
+  task-router:
+    target: codex
+  skill-cli-guide:
+    target: claude
+```
+
+支持的 `target`：
+
+- `claude`
+- `codex`
+
+也支持在组里内联覆盖：
+
+```yaml
+groups:
+  common:
+    description: 通用工具
+    skills:
+      - name: task-router
+        target: codex
+      - name: skill-cli-guide
+        target: claude
+```
+
+未声明 `target` 时默认按 `claude` 处理，兼容现有仓库。
+
 ## 安装位置
 
-| 参数 | 位置 | 作用范围 |
-|------|------|---------|
-| (默认) | `.claude/skills/` (当前目录) | 仅当前项目 |
-| `-g` | `~/.claude/skills/` | 所有项目 |
+| Target | 默认安装位置 | `-g` 全局位置 |
+|--------|--------------|--------------|
+| `claude` | `.claude/skills/` | `~/.claude/skills/` |
+| `codex` | `.codex/skills/` | `~/.codex/skills/` |
+
+`skill-cli sync` 会根据 `target` 将已安装 skill 重同步到正确目录，并清理同 scope 下错误平台目录中的旧副本。
 
 ## License
 
